@@ -1,0 +1,83 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aeroscan
+      POSTGRES_PASSWORD: aeroscan
+      POSTGRES_DB: aeroscan
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aeroscan -d aeroscan"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # One-shot container: creates the bucket, then exits. Keeps bucket
+  # provisioning out of application startup, where it does not belong.
+  createbuckets:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/inspection-runs &&
+      echo 'bucket ready'
+      "
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql+psycopg://aeroscan:aeroscan@db:5432/aeroscan
+      S3_ENDPOINT_URL: http://minio:9000
+      # Presigned URLs are signed for the host the client will call.
+      # Inside compose that host is `minio`, but the drone (or curl on
+      # the host) resolves `localhost`, hence two separate settings.
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: inspection-runs
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/srv/app
+      - ./alembic:/srv/alembic
+      - ./scripts:/srv/scripts
+      - ./tests:/srv/tests
+    # Migrations run at container start in development only. In
+    # production they are a separate step; see README, Production notes.
+    command: >
+      /bin/sh -c "
+      alembic upgrade head &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+volumes:
+  pgdata:
+  miniodata:
