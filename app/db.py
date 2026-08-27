@@ -18,7 +18,7 @@ _settings = get_settings()
 # database-bound, so the async stack would add greenlet plumbing and
 # harder-to-read tests without changing where the time is spent.
 # FastAPI runs sync path operations in a threadpool, which is enough
-# at this scale. See README for the trade-off.
+# at this scale.
 engine = create_engine(
     _settings.database_url,
     pool_pre_ping=True,

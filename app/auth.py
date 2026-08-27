@@ -43,9 +43,7 @@ def authenticate_machine(
     if not api_key:
         raise ApiError(401, "missing_api_key", f"{API_KEY_HEADER} header is required")
 
-    drone = db.scalar(
-        select(Drone).where(Drone.api_key_hash == hash_api_key(api_key))
-    )
+    drone = db.scalar(select(Drone).where(Drone.api_key_hash == hash_api_key(api_key)))
     if drone is None:
         raise ApiError(401, "invalid_api_key", "unknown or revoked API key")
 
@@ -72,8 +70,8 @@ def require_backoffice_key(api_key: ApiKeyHeaderValue) -> None:
     app reads across every site. Reusing one key would mean a single
     compromised drone could read the whole fleet.
 
-    Compared in constant time; the comparison is cheap but the habit is
-    the point.
+    Compared in constant time, so a wrong key cannot be recovered one
+    byte at a time from response timings.
     """
     expected = get_settings().backoffice_api_key
     if not api_key or not hmac.compare_digest(api_key, expected):

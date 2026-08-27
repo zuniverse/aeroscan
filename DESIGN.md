@@ -1,24 +1,24 @@
 # Design Note - Drone Data Ingestion Pipeline
 
-**Working assumptions.** ~18 000 files / ~40 GB per run: a five-band multispectral sensor over ~3 600 waypoints, ~2.2 MB per frame, so plain `PUT` and no multipart needed. Image bytes go straight to S3 and never transit the API; the API only ever handles metadata. Site uplink is slow and flaky, so an upload window of several hours is normal, not a symptom. A *run* is one inspection session, not one flight: capturing ~18 000 frames takes hours, well past a multirotor's endurance, so a run typically spans several battery swaps. Nothing in the model tracks individual flights, because what matters downstream is the complete set of frames for a site at a date.
+**Working assumptions.** ~18 000 files / ~40 GB per run: a five-band multispectral sensor over ~3 600 waypoints, ~2.2 MB per frame, so plain `PUT` and no multipart needed. Image bytes go straight to S3 and never transit the API; the API only ever handles metadata. Site uplink is slow and flaky, so an upload window of several hours is normal, not a symptom. A _run_ is one inspection session, not one flight: capturing ~18 000 frames takes hours, well past a multirotor's endurance, so a run typically spans several battery swaps. Nothing in the model tracks individual flights, because what matters downstream is the complete set of frames for a site at a date.
 
 ## 1. API contract
 
 Auth: `X-API-Key` header, one key per drone, hashed at rest. The key resolves the drone, so no drone identifier is ever trusted from the request body.
 
-| Purpose         | Route                                       | Notes                                                                                                                                                                                                 |
-| --------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Purpose         | Route                                       | Notes                                                                                                                                                                                               |
+| --------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Create run      | `POST /v1/runs`                             | Body: `drone_run_uid` (client UUID), `operator`, `started_at`, `files[] {key, size_bytes}`. Returns run id, status, upload prefix, first batch of presigned URLs. `201` on create, `200` on replay. |
-| Get upload URLs | `POST /v1/runs/{run_id}/upload-urls`        | Body: up to 500 file keys. Returns fresh presigned `PUT` URLs.                                                                                                                                        |
-| Confirm uploads | `POST /v1/runs/{run_id}/file-confirmations` | Body: up to 1 000 `{key, size_bytes}`. Returns `confirmed_count` / `expected_count`.                                                                                                                  |
-| Complete run    | `POST /v1/runs/{run_id}/completion`         | Body: `defect_detected`, `defect_count`, `confidence_score`. Verifies against the bucket, sets final status, returns missing and unverified keys (truncated).                                |
-| List runs       | `GET /v1/runs`                              | Filters: `site_id`, `drone_id`, `started_from`/`started_to`, `defect`. Ordered by `confidence_score DESC`. Keyset pagination.                                                             |
+| Get upload URLs | `POST /v1/runs/{run_id}/upload-urls`        | Body: up to 500 file keys. Returns fresh presigned `PUT` URLs.                                                                                                                                      |
+| Confirm uploads | `POST /v1/runs/{run_id}/file-confirmations` | Body: up to 1 000 `{key, size_bytes}`. Returns `confirmed_count` / `expected_count`.                                                                                                                |
+| Complete run    | `POST /v1/runs/{run_id}/completion`         | Body: `defect_detected`, `defect_count`, `confidence_score`. Verifies against the bucket, sets final status, returns missing and unverified keys (truncated).                                       |
+| List runs       | `GET /v1/runs`                              | Filters: `site_id`, `drone_id`, `started_from`/`started_to`, `defect`. Ordered by `confidence_score DESC`. Keyset pagination.                                                                       |
 
 **Idempotency.** The drone generates `drone_run_uid` once per run and resends it on retry. `UNIQUE (drone_id, drone_run_uid)` plus `INSERT ... ON CONFLICT DO NOTHING` then read-back: a retry returns the same run with freshly minted URLs (they expire, so regenerating is correct, not a workaround). Confirmations are an `UPDATE` of pre-existing manifest rows guarded by `confirmed_at IS NULL`, so a replayed batch matches nothing and moves no counter. A key the run never declared cannot create a row; it comes back in `unknown_keys`. Completion writes analysis results **once**: a second call re-reconciles files and may promote the status, but never overwrites `defect_detected` / `defect_count` / `confidence_score`. On regulated data, a result that silently changes after the fact is worse than a missing file. `reconciled_at` is tracked separately from `completed_at`.
 
 **Errors.** `401` bad key, `404` unknown run, `409` run already `ABANDONED`, `413` batch over cap, `422` validation, `500` run_lookup_failed (unreachable by construction, raised rather than dereferencing a null). Body: `{error_code, message, details}`.
 
-**Why a fifth endpoint.** Presigning all 18 000 URLs up front is roughly 8 MB of JSON against MinIO, where a signed URL runs to about 350 characters, and closer to 12 MB against S3, where credential scoping makes them longer. Most would expire before the drone reached them. Handing them out in batches keeps responses small and URLs fresh, for one small endpoint. The alternative (a single presigned POST policy scoped to `runs/{id}/` with a `starts-with` condition) covers the whole run in one document and keeps the endpoint count at four, at the cost of a `multipart/form-data` client. Rejected here for client simplicity.
+**Issuing URLs in batches.** Presigning all 18 000 URLs up front is roughly 8 MB of JSON against MinIO, where a signed URL runs to about 350 characters, and closer to 12 MB against S3, where credential scoping makes them longer. Most would expire before the drone reached them. A single presigned POST policy scoped to the run prefix would avoid the extra endpoint entirely, at the cost of a `multipart/form-data` client.
 
 ## 2. Data model
 
@@ -115,6 +115,6 @@ than once, and would catch a failed upload mid-run instead of at the end. Worth
 it when the requirement becomes early detection; at 18 000 events per run it is
 real infrastructure for a guarantee the listing already provides.
 
-## Deliberately out of scope
+## Not covered
 
 Preprocessing of the image payload, key rotation, per-site rate limiting, and any retention or archival policy for `run_files`. The last one is the first thing that breaks at scale: 200 drones at 5 runs/day is ~18 M rows/day, and the fix is collapsing terminal runs into an aggregate once reconciled, since per-file detail has no value afterwards.

@@ -50,9 +50,9 @@ curl -s 'localhost:8000/v1/runs?defect=true&limit=5' \
   -H 'X-API-Key: dev-backoffice-key'
 ```
 
-## Review guide
+## Where to start reading
 
-Three files carry the decisions. In order:
+Most of the interesting decisions live in three files:
 
 1. **`app/routers/runs.py`** - everything a drone calls. Idempotent creation, batched
    confirmations, and the reconciliation in `complete_run`, which is where the two
@@ -127,7 +127,7 @@ Three files carry the decisions. In order:
 
 Roughly 750 lines of application code, plus tests and migrations.
 
-## If I had more time
+## What this doesn't do
 
 - **Collapse terminal runs.** `run_files` is what breaks first: 200 drones at 5 runs a
   day is around 18 M rows a day. Once a run is reconciled the per-file detail has no
@@ -168,9 +168,9 @@ Roughly 750 lines of application code, plus tests and migrations.
   environment files. Database credentials rotated automatically; drone API keys stored
   as SHA-256 digests in the database, so a database dump does not yield usable keys.
 - **Migrations.** A separate one-off ECS task running `alembic upgrade head` before the
-  service deploys, never on container start as it is here. Migrations stay
-  backward-compatible for one release so old and new tasks can run side by side during a
-  rollout.
+  service deploys, never on container start, which is a development convenience only.
+  Migrations stay backward-compatible for one release so old and new tasks can run side
+  by side during a rollout.
 - **Rollback.** ECS keeps the previous task definition, so application rollback is one
   update and a couple of minutes. Schema rollback is not symmetric: expand-and-contract
   (add nullable, backfill, switch reads, drop later) means a bad deploy can roll back
@@ -180,12 +180,10 @@ Roughly 750 lines of application code, plus tests and migrations.
   ceiling is `run_files` write volume, which is why collapsing terminal runs is the first
   item above.
 
-## AI use
+## Working with AI
 
-I used Claude throughout, mostly as a reviewer and a rubber duck rather than a code
-generator. Design decisions were argued out before any code existed: the manifest versus
-liveness split, whether `INCOMPLETE` should be terminal, and the trust model around
-client-declared confirmations all came from that.
+I used Claude throughout, mostly as a code generator, and acted as the reviewer and
+gatekeeper on every decision. The four points below are where that mattered.
 
 What I reworked or rejected:
 

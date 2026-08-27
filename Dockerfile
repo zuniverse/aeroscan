@@ -16,7 +16,7 @@ COPY alembic ./alembic
 COPY app ./app
 COPY scripts ./scripts
 
-# Non-root at runtime. Cheap here, and the reflex worth showing.
+# Non-root at runtime: a container escape starts from an unprivileged account rather than root.
 RUN useradd --create-home --uid 1000 appuser && chown -R appuser:appuser /srv
 USER appuser
 
